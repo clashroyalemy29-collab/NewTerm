@@ -20,6 +20,9 @@ class BaseTerminalSplitViewControllerChild: UIViewController {
 	var screenSize: ScreenSize?
 	var isSplitViewResizing = false
 	var showsTitleView = false
+
+	/// Stops any shells running in this view controller (and its children). Safe to call repeatedly.
+	func terminate() {}
 }
 
 class TerminalSplitViewController: BaseTerminalSplitViewControllerChild {
@@ -44,6 +47,12 @@ class TerminalSplitViewController: BaseTerminalSplitViewControllerChild {
 	}
 	override var showsTitleView: Bool {
 		didSet { updateShowsTitleView() }
+	}
+
+	override func terminate() {
+		for viewController in viewControllers ?? [] {
+			viewController.terminate()
+		}
 	}
 
 	private let stackView = UIStackView()
@@ -187,6 +196,12 @@ class TerminalSplitViewController: BaseTerminalSplitViewControllerChild {
 					let index = viewControllers.firstIndex(where: { item in viewController == item }) else {
 			return
 		}
+
+		// Make sure the shell in the removed pane is stopped and the pane is fully detached.
+		viewController.terminate()
+		viewController.willMove(toParent: nil)
+		viewController.view.superview?.removeFromSuperview()
+		viewController.removeFromParent()
 
 		viewControllers.remove(at: index)
 

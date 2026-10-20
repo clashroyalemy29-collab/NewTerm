@@ -198,15 +198,21 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 		updateScreenSize()
 	}
 
-	override func removeFromParent() {
-		if hasStarted {
-			do {
-				try terminalController.stopSubProcess()
-			} catch {
-				Logger().error("Failed to stop subprocess: \(String(describing: error))")
-			}
+	override func terminate() {
+		guard hasStarted else {
+			return
 		}
+		hasStarted = false
 
+		do {
+			try terminalController.stopSubProcess()
+		} catch {
+			Logger().error("Failed to stop subprocess: \(String(describing: error))")
+		}
+	}
+
+	override func removeFromParent() {
+		terminate()
 		super.removeFromParent()
 	}
 
@@ -229,11 +235,18 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 
 		let glyphSize = terminalController.fontMetrics.boundingBox
 		if glyphSize.width == 0 || glyphSize.height == 0 {
-			fatalError("Failed to get glyph size")
+			return
 		}
 
-		let newSize = ScreenSize(cols: UInt16(layoutSize.width / glyphSize.width),
-														 rows: UInt16(layoutSize.height / glyphSize.height.rounded(.up)),
+		let cols = (layoutSize.width / glyphSize.width).rounded(.down)
+		let rows = (layoutSize.height / glyphSize.height.rounded(.up)).rounded(.down)
+		if !cols.isFinite || !rows.isFinite || cols < 1 || rows < 1 {
+			// Not laid out yet (or hidden). We’ll be called again when it is.
+			return
+		}
+
+		let newSize = ScreenSize(cols: UInt16(min(cols, 1000)),
+														 rows: UInt16(min(rows, 1000)),
 														 cellSize: glyphSize)
 		if screenSize != newSize {
 			screenSize = newSize

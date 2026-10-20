@@ -70,7 +70,7 @@ struct TabToolbarView: View {
 	private var titleLabel: some View {
 		HStack {
 			Spacer()
-			Text(state.terminals[state.selectedIndex].title)
+			Text(state.terminals.indices.contains(state.selectedIndex) ? state.terminals[state.selectedIndex].title : "")
 				.font(.system(size: 17, weight: .semibold))
 			Spacer()
 		}

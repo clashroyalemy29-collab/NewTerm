@@ -106,7 +106,7 @@ class RootViewController: UIViewController {
 		let topBarHeight: CGFloat = isWide ? 33 : 66
 		tabToolbar?.view.frame = CGRect(x: 0, y: 0, width: view.frame.size.width, height: view.safeAreaInsets.top + topBarHeight)
 
-		for viewController in terminals {
+		for viewController in terminals where viewController.additionalSafeAreaInsets.top != topBarHeight {
 			viewController.additionalSafeAreaInsets.top = topBarHeight
 		}
 		#endif
@@ -156,19 +156,19 @@ class RootViewController: UIViewController {
 		}
 		splitViewController.didMove(toParent: self)
 
-		if index == terminals.count {
+		if axis == nil || index >= terminals.count {
+			// A brand new tab. Insert it; never replace the tab that’s already at this index, or that
+			// tab’s shell would be orphaned and keep running invisibly.
+			let insertIndex = min(index, terminals.count)
 			splitViewController.viewControllers = [newTerminal]
-			terminals.append(splitViewController)
-			tabToolbar?.didAddTab(at: index)
-		} else {
-			if let axis = axis {
-				let firstViewController = terminals[index]
-				let secondViewController = newTerminal
-				splitViewController.axis = axis
-				splitViewController.viewControllers = [firstViewController, secondViewController]
-			} else {
-				splitViewController.viewControllers = [newTerminal]
-			}
+			terminals.insert(splitViewController, at: insertIndex)
+			tabToolbar?.didAddTab(at: insertIndex)
+		} else if let axis = axis {
+			// Split the existing tab in two.
+			let firstViewController = terminals[index]
+			let secondViewController = newTerminal
+			splitViewController.axis = axis
+			splitViewController.viewControllers = [firstViewController, secondViewController]
 
 			terminals[index] = splitViewController
 			tabToolbar?.tabDidUpdate(at: index)
@@ -181,6 +181,7 @@ class RootViewController: UIViewController {
 			return
 		}
 
+		viewController.terminate()
 		viewController.removeFromParent()
 		viewController.view.removeFromSuperview()
 
@@ -210,6 +211,7 @@ class RootViewController: UIViewController {
 
 	@IBAction func removeAllTerminals() {
 		for terminalViewController in terminals {
+			terminalViewController.terminate()
 			terminalViewController.removeFromParent()
 			terminalViewController.view.removeFromSuperview()
 		}

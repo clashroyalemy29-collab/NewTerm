@@ -97,10 +97,16 @@ class TabToolbarViewController: UIViewController {
 	}
 
 	func didRemoveTab(at index: Int) {
+		guard state.terminals.indices.contains(index) else {
+			return
+		}
 		state.terminals.remove(at: index)
 	}
 
 	func tabDidUpdate(at index: Int) {
+		guard state.terminals.indices.contains(index) else {
+			return
+		}
 		state.terminals[index].title = dataSource?.terminalName(at: index) ?? .localize("Terminal")
 	}
 

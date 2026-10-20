@@ -141,6 +141,9 @@ public class TerminalController {
 
 	public func windowWillEnterForeground() {
 		// Go back to full speed.
+		terminalQueue.async {
+			self.needsFullRefresh = true
+		}
 		isWindowVisible = true
 		if isVisible {
 			startUpdateTimer(fps: refreshRate)
@@ -153,14 +156,20 @@ public class TerminalController {
 	}
 
 	@objc private func appDidBecomeActive() {
-		startUpdateTimer(fps: refreshRate)
+		terminalQueue.async {
+			self.needsFullRefresh = true
+		}
 		isWindowVisible = true
+		startUpdateTimer(fps: refreshRate)
 	}
 
 	public func terminalWillAppear() {
-		// Start updating again.
-		startUpdateTimer(fps: refreshRate)
+		// Start updating again. Rows weren’t rendered while hidden, so redraw them all.
+		terminalQueue.async {
+			self.needsFullRefresh = true
+		}
 		isTabVisible = true
+		startUpdateTimer(fps: refreshRate)
 	}
 
 	public func terminalWillDisappear() {
@@ -196,8 +205,8 @@ public class TerminalController {
 	}
 
 	public func stopSubProcess() throws {
-		try subProcess!.stop()
-		stopUpdatingTimer()
+		defer { stopUpdatingTimer() }
+		try subProcess?.stop()
 	}
 
 	// MARK: - Terminal
@@ -221,6 +230,10 @@ public class TerminalController {
 	}
 
 	@objc private func updateTimerFired() {
+		// Tabs that aren’t on screen still have to process output (so the shell doesn’t stall), but
+		// there’s no point building views for them. That used to make many open tabs very slow.
+		let isVisible = self.isVisible
+
 		terminalQueue.async {
 			if !self.readBuffer.isEmpty {
 				self.terminal?.feed(byteArray: self.readBuffer)
@@ -246,11 +259,25 @@ public class TerminalController {
 			}
 			terminal.clearUpdateRange()
 
+			if !isVisible {
+				// Render everything again once we’re visible.
+				self.needsFullRefresh = true
+				if updateRange != (0, 0) {
+					DispatchQueue.main.async {
+						if !self.isVisible && !self.isDirty {
+							self.isDirty = true
+						}
+					}
+				}
+				self.lastCursorLocation = cursorLocation
+				return
+			}
+
 			let scrollInvariantRows = scrollbackRows + terminal.rows
 
 			// Remove lines that no longer exist
 			if self.lines.count > scrollInvariantRows {
-				self.lines.removeSubrange((scrollInvariantRows - 1)...)
+				self.lines.removeSubrange(scrollInvariantRows...)
 			}
 
 			// Add new lines that have been introduced
@@ -392,6 +419,7 @@ public class TerminalController {
 	private func updateScreenSize() {
 		if let screenSize = screenSize,
 			 let terminal = terminal,
+			 screenSize.cols > 0 && screenSize.rows > 0,
 			 screenSize.cols != terminal.cols || screenSize.rows != terminal.rows {
 			subProcess?.screenSize = screenSize
 			terminal.resize(cols: Int(screenSize.cols),
