@@ -65,6 +65,26 @@ class SubProcess {
 		#endif
 	}()
 
+	/// The root of the jailbreak’s filesystem. This is `/var/jb` on rootless jailbreaks, but on
+	/// roothide it’s a randomised `.jbroot-XXXX` directory that has to be discovered at runtime.
+	private static let jailbreakRoot: String? = {
+		#if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
+		return nil
+		#else
+		let fileManager = FileManager.default
+		var candidates = [String]()
+		if let path = ProcessInfo.processInfo.environment["JB_ROOT_PATH"] {
+			candidates.append(path)
+		}
+		candidates.append("/var/jb")
+		let bundleDirectory = "/var/containers/Bundle/Application"
+		if let items = try? fileManager.contentsOfDirectory(atPath: bundleDirectory) {
+			candidates += items.filter { $0.hasPrefix(".jbroot-") }.map { "\(bundleDirectory)/\($0)" }
+		}
+		return candidates.first { fileManager.isExecutableFile(atPath: "\($0)/usr/bin/login") }
+		#endif
+	}()
+
 	private static let login: String = {
 		#if targetEnvironment(simulator)
 		return "/bin/zsh"
@@ -75,8 +95,10 @@ class SubProcess {
 		if loginIsShell {
 			return "/var/jb/bin/zsh"
 		}
-		return ["/var/jb/usr/bin/login", "/usr/bin/login"]
-			.first { (try? URL(fileURLWithPath: $0).checkResourceIsReachable()) == true } ?? "/usr/bin/login"
+		if let root = jailbreakRoot {
+			return "\(root)/usr/bin/login"
+		}
+		return "/usr/bin/login"
 		#endif
 	}()
 
@@ -119,9 +141,31 @@ class SubProcess {
 
 	private static var shell: String {
 		if let result = userPasswd?.pw_shell {
-			return String(cString: result)
+			let path = String(cString: result)
+			if FileManager.default.isExecutableFile(atPath: path) {
+				return path
+			}
+		}
+		// The configured shell doesn’t exist at that path (e.g. roothide), so look inside the jailbreak.
+		if let root = jailbreakRoot {
+			for name in ["zsh", "bash", "sh"] {
+				let path = "\(root)/bin/\(name)"
+				if FileManager.default.isExecutableFile(atPath: path) {
+					return path
+				}
+			}
 		}
 		return "/bin/bash"
+	}
+
+	/// PATH for the shell. Only needed when the jailbreak isn’t at the usual `/var/jb`.
+	private static var pathEnvironment: [String: String] {
+		guard let root = jailbreakRoot, root != "/var/jb" else {
+			return [:]
+		}
+		let directories = ["usr/local/sbin", "usr/local/bin", "usr/sbin", "usr/bin", "sbin", "bin"]
+			.map { "\(root)/\($0)" } + ["/usr/bin", "/bin"]
+		return ["PATH": directories.joined(separator: ":")]
 	}
 
 	private static var homeDirectory: String {
@@ -179,7 +223,8 @@ class SubProcess {
 		} else {
 			argv = (Self.loginArgv + [initialDirectory ?? Self.homeDirectory, Self.shell]).cStringArray
 		}
-		let envp = (ProcessInfo.processInfo.environment.map { "\($0)=\($1)" } + Self.baseEnvp + [
+		let environment = ProcessInfo.processInfo.environment.merging(Self.pathEnvironment) { _, new in new }
+		let envp = (environment.map { "\($0)=\($1)" } + Self.baseEnvp + [
 			"LANG=\(localeCode)"
 		]).cStringArray
 
