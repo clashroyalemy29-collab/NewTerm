@@ -1,0 +1,53 @@
+name: Build DEB
+
+# Builds NewTerm as a .deb for jailbroken devices:
+#   rootless  - Dopamine (rootless)         -> iphoneos-arm64
+#   roothide  - Dopamine (roothide)         -> iphoneos-arm64e
+
+on:
+  push:
+    branches: [ '**' ]
+    paths-ignore:
+      - '**/*.md'
+      - 'assets/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.scheme }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: rootless
+            flags: ROOTLESS=1
+            theos: https://github.com/theos/theos.git
+          - scheme: roothide
+            flags: ROOTHIDE=1
+            theos: https://github.com/roothide/theos.git
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Install tools
+      run: brew install ldid make xz dpkg cmark
+    - name: Set up Theos
+      run: git clone --recursive --depth=1 '${{ matrix.theos }}' ~/theos
+    - name: Compile
+      run: |
+        set +e
+        gmake package THEOS=~/theos ${{ matrix.flags }} > build.log 2>&1
+        status=$?
+        # Surface errors as annotations so they are readable without downloading logs.
+        grep -i -E "error|fatal|failed|unable|cannot|could not" build.log | sort -u | head -30 | while read -r line; do
+          echo "::error::${line}"
+        done
+        if [ $status -ne 0 ]; then
+          echo "::error::TAIL: $(tail -n 25 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+        fi
+        exit $status
+    - name: Upload DEB
+      uses: actions/upload-artifact@v4
+      with:
+        name: NewTerm-${{ matrix.scheme }}-deb
+        path: packages/*.deb

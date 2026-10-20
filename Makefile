@@ -1,7 +1,11 @@
 export TARGET = iphone:latest:14.0
 export ARCHS = arm64
 
-ifeq ($(ROOTLESS),1)
+ifeq ($(ROOTHIDE),1)
+	export THEOS_PACKAGE_SCHEME = roothide
+	export DEB_ARCH = iphoneos-arm64e
+	export INSTALL_PREFIX =
+else ifeq ($(ROOTLESS),1)
 	export DEB_ARCH = iphoneos-arm64
 	export INSTALL_PREFIX = /var/jb
 else
