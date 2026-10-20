@@ -4,6 +4,7 @@ export ARCHS = arm64
 ifeq ($(ROOTHIDE),1)
 	export THEOS_PACKAGE_SCHEME = roothide
 	export DEB_ARCH = iphoneos-arm64e
+	export ARCHS = arm64 arm64e
 	export INSTALL_PREFIX =
 else ifeq ($(ROOTLESS),1)
 	export DEB_ARCH = iphoneos-arm64
@@ -25,8 +26,12 @@ NewTerm_INSTALL_PATH = $(INSTALL_PREFIX)/Applications
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
 
+# The roothide scheme already writes the correct architecture; running this again would turn
+# "iphoneos-arm64e" into "iphoneos-arm64e64e".
+ifneq ($(ROOTHIDE),1)
 before-package::
 	perl -i -pe s/iphoneos-arm/$(DEB_ARCH)/ $(THEOS_STAGING_DIR)/DEBIAN/control
+endif
 
 after-stage::
 	@$(TARGET_CODESIGN) $(NewTerm_CODESIGN_FLAGS) $(THEOS_STAGING_DIR)$(INSTALL_PREFIX)/Applications/NewTerm.app/NewTermLoginHelper
