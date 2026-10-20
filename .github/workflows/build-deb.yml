@@ -46,6 +46,15 @@ jobs:
           echo "::error::TAIL: $(tail -n 25 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
         fi
         exit $status
+    - name: Inspect DEB
+      run: |
+        deb=$(ls packages/*.deb | head -1)
+        echo "::notice::NAME: $deb"
+        echo "::notice::CONTROL: $(dpkg-deb -I "$deb" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+        echo "::notice::FILES: $(dpkg-deb -c "$deb" | awk '{print $6}' | head -40 | awk '{printf "%s%%0A", $0}')"
+        rm -rf /tmp/x && dpkg-deb -x "$deb" /tmp/x
+        bin=$(find /tmp/x -path '*NewTerm.app/NewTerm' | head -1)
+        echo "::notice::MACHO: $(file "$bin"; otool -L "$bin" | head -5 | awk '{printf "%s%%0A", $0}')"
     - name: Upload DEB
       uses: actions/upload-artifact@v4
       with:
