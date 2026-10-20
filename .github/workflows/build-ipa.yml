@@ -35,9 +35,10 @@ jobs:
           build > build.log 2>&1
         status=$?
         # Surface compiler errors as annotations so they are visible without downloading logs.
-        grep -E "error:|error " build.log | sort -u | head -40 | while read -r line; do
+        grep -i -E "error|fatal|failed|unable|cannot|could not" build.log | sort -u | head -30 | while read -r line; do
           echo "::error::${line}"
         done
+        echo "::error::TAIL: $(tail -n 25 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
         exit $status
     - name: Upload build log
       if: failure()
