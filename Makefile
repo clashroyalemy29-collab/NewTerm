@@ -4,7 +4,6 @@ export ARCHS = arm64
 ifeq ($(ROOTHIDE),1)
 	export THEOS_PACKAGE_SCHEME = roothide
 	export DEB_ARCH = iphoneos-arm64e
-	export ARCHS = arm64 arm64e
 	export INSTALL_PREFIX =
 else ifeq ($(ROOTLESS),1)
 	export DEB_ARCH = iphoneos-arm64
