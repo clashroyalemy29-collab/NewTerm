@@ -42,6 +42,8 @@ public class Preferences: NSObject, ObservableObject {
 		willSet { objectWillChange.send() }
 	}
 
+	private var isInitialised = false
+
 	override init() {
 		super.init()
 
@@ -51,6 +53,7 @@ public class Preferences: NSObject, ObservableObject {
 
 		fontMetricsChanged()
 		colorMapChanged()
+		isInitialised = true
 	}
 
 	@AppStorage("fontName")
@@ -179,12 +182,18 @@ public class Preferences: NSObject, ObservableObject {
 		let font = AppFont.predefined[fontName] ?? AppFont()
 		objectWillChange.send()
 		fontMetrics = FontMetrics(font: font, fontSize: CGFloat(fontSize))
+		if isInitialised {
+			NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+		}
 	}
 
 	private func colorMapChanged() {
 		let theme = AppTheme.predefined[themeName] ?? AppTheme()
 		objectWillChange.send()
 		colorMap = ColorMap(theme: theme)
+		if isInitialised {
+			NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+		}
 	}
 
 }

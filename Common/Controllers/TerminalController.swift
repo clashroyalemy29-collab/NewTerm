@@ -12,7 +12,7 @@ import SwiftTerm
 import os.log
 
 public protocol TerminalControllerDelegate: AnyObject {
-	func refresh(lines: inout [AnyView])
+	func refresh(lines: [TerminalLine])
 	func activateBell()
 	func titleDidChange(_ title: String?, isDirty: Bool, hasBell: Bool)
 	func currentFileDidChange(_ url: URL?, inWorkingDirectory workingDirectoryURL: URL?)
@@ -41,7 +41,7 @@ public class TerminalController {
 	private var subProcess: SubProcess?
 	private var subProcessFailureError: Error?
 	private let stringSupplier = StringSupplier()
-	private var lines = [AnyView]()
+	private var lines = [TerminalLine]()
 
 	private var processLaunchDate: Date?
 	private var updateTimer: CADisplayLink?
@@ -56,6 +56,7 @@ public class TerminalController {
 		didSet { updateTitle() }
 	}
 	private var readBuffer = [UTF8Char]()
+	private var needsFullRefresh = false
 
 	internal var terminalQueue = DispatchQueue(label: "ws.hbang.Terminal.terminal-queue")
 
@@ -110,6 +111,11 @@ public class TerminalController {
 
 		powerStateChanged()
 		terminal?.refresh(startRow: 0, endRow: terminal?.rows ?? 0)
+
+		// Fonts and colours changed, so every row (including scrollback) has to be rendered again.
+		terminalQueue.async {
+			self.needsFullRefresh = true
+		}
 	}
 
 	@objc private func powerStateChanged() {
@@ -229,7 +235,11 @@ public class TerminalController {
 			var cursorLocation = terminal.getCursorLocation()
 			cursorLocation.y += scrollbackRows
 
-			let updateRange = terminal.getScrollInvariantUpdateRange() ?? (0, 0)
+			var updateRange = terminal.getScrollInvariantUpdateRange() ?? (0, 0)
+			if self.needsFullRefresh {
+				self.needsFullRefresh = false
+				updateRange = (0, max(scrollbackRows + terminal.rows - 1, 0))
+			}
 			if updateRange == (0, 0) && cursorLocation == self.lastCursorLocation {
 				// Nothing changed, nothing to do.
 				return
@@ -245,7 +255,7 @@ public class TerminalController {
 
 			// Add new lines that have been introduced
 			while self.lines.count <= max(updateRange.endY, scrollInvariantRows) {
-				self.lines.append(AnyView(EmptyView()))
+				self.lines.append(.empty)
 			}
 
 			// Update lines that changed
@@ -263,14 +273,105 @@ public class TerminalController {
 
 			self.lastCursorLocation = cursorLocation
 
+			// Hand a copy of the array to the main thread so the terminal queue can keep mutating its own.
+			let snapshot = self.lines
 			DispatchQueue.main.async {
-				self.delegate?.refresh(lines: &self.lines)
+				self.delegate?.refresh(lines: snapshot)
 
 				if !self.isVisible && !self.isDirty {
 					self.isDirty = true
 				}
 			}
 		}
+	}
+
+	// MARK: - Selection and clipboard
+
+	/// The number of columns currently in the terminal.
+	public var columnCount: Int { terminal?.cols ?? 0 }
+
+	/// Returns the plain text between two cells (inclusive). Rows are scroll-invariant, matching the
+	/// row indices used by `TerminalLine`s. Trailing blank space on each row is trimmed.
+	public func text(fromRow startRow: Int, col startCol: Int, toRow endRow: Int, col endCol: Int) -> String {
+		terminalQueue.sync { () -> String in
+			guard let terminal = self.terminal,
+						startRow <= endRow else {
+				return ""
+			}
+
+			var rows = [String]()
+			for row in startRow...endRow {
+				guard let line = terminal.getScrollInvariantLine(row: row) else {
+					rows.append("")
+					continue
+				}
+				let first = max(row == startRow ? startCol : 0, 0)
+				let last = min(row == endRow ? endCol : terminal.cols - 1, terminal.cols - 1)
+				var string = ""
+				if first <= last {
+					for j in first...last {
+						let data = line[j]
+						// The trailing cell of a wide character has no width of its own.
+						if data.width == 0 {
+							continue
+						}
+						let character = data.getCharacter()
+						string.append(character == "\0" ? " " : character)
+					}
+				}
+				while string.last == " " {
+					string.removeLast()
+				}
+				rows.append(string)
+			}
+			return rows.joined(separator: "\n")
+		}
+	}
+
+	/// Returns the start and end columns of the “word” surrounding the given cell.
+	public func wordRange(atRow row: Int, col: Int) -> (start: Int, end: Int) {
+		terminalQueue.sync { () -> (start: Int, end: Int) in
+			guard let terminal = self.terminal,
+						let line = terminal.getScrollInvariantLine(row: row),
+						col >= 0 && col < terminal.cols else {
+				return (col, col)
+			}
+
+			let separators = CharacterSet.whitespacesAndNewlines
+				.union(CharacterSet(charactersIn: "\0\"'`()[]{}<>,;|"))
+			func isSeparator(_ index: Int) -> Bool {
+				let character = line[index].getCharacter()
+				return character.unicodeScalars.allSatisfy { separators.contains($0) }
+			}
+
+			if isSeparator(col) {
+				return (col, col)
+			}
+			var start = col
+			var end = col
+			while start > 0 && !isSeparator(start - 1) {
+				start -= 1
+			}
+			while end < terminal.cols - 1 && !isSeparator(end + 1) {
+				end += 1
+			}
+			return (start, end)
+		}
+	}
+
+	/// Pastes text into the terminal. Line endings are converted to carriage returns, as if typed,
+	/// and the text is wrapped in bracketed paste markers when the running program asked for them.
+	public func paste(_ string: String) {
+		var text = string
+			.replacingOccurrences(of: "\r\n", with: "\r")
+			.replacingOccurrences(of: "\n", with: "\r")
+
+		if terminal?.bracketedPasteMode ?? false {
+			// Prevent the pasted text from ending the bracketed paste early.
+			text = text.replacingOccurrences(of: "\u{1b}[201~", with: "")
+			text = "\u{1b}[200~" + text + "\u{1b}[201~"
+		}
+		subProcess?.write(data: [UTF8Char](text.utf8))
 	}
 
 	public func clearTerminal() {
@@ -413,6 +514,10 @@ extension TerminalController: TerminalDelegate {
 extension TerminalController: TerminalInputProtocol {
 
 	public var applicationCursor: Bool { terminal?.applicationCursor ?? false }
+
+	public func receivePaste(text: String) {
+		paste(text)
+	}
 
 	public func receiveKeyboardInput(data: [UTF8Char]) {
 		// Forward the data from the keyboard directly to the subprocess

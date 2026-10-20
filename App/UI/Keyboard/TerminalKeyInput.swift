@@ -49,6 +49,13 @@ extension ToolbarKey {
 class TerminalKeyInput: TextInputBase {
 
 	weak var terminalInputDelegate: TerminalInputProtocol?
+
+	// Hooks so the hardware keyboard shortcuts (⌘C, ⌘V, ⌘A) and the system edit menu work with the
+	// terminal’s own text selection.
+	var hasSelection: () -> Bool = { false }
+	var copyHandler: (() -> Void)?
+	var selectAllHandler: (() -> Void)?
+	var pasteHandler: (() -> Void)?
 	weak var textView: UIView! {
 		didSet {
 			textView.frame = bounds
@@ -220,6 +227,12 @@ class TerminalKeyInput: TextInputBase {
 			// Only paste if the pasteboard contains a plaintext type
 			return UIPasteboard.general.hasStrings || UIPasteboard.general.hasURLs
 
+		case #selector(self.copy(_:)):
+			return hasSelection()
+
+		case #selector(self.selectAll(_:)):
+			return selectAllHandler != nil
+
 		case #selector(self.cut(_:)):
 			// Ensure cut is never allowed
 			return false
@@ -230,12 +243,19 @@ class TerminalKeyInput: TextInputBase {
 	}
 
 	override func copy(_ sender: Any?) {
-//		textView?.copy(sender)
+		copyHandler?()
+	}
+
+	override func selectAll(_ sender: Any?) {
+		selectAllHandler?()
 	}
 
 	override func paste(_ sender: Any?) {
+		pasteHandler?()
+
 		if let string = UIPasteboard.general.string {
-			terminalInputDelegate!.receiveKeyboardInput(data: string.utf8Array)
+			// Goes through the terminal so line endings and bracketed paste mode are handled correctly.
+			terminalInputDelegate?.receivePaste(text: string)
 		}
 	}
 

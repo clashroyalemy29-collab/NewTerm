@@ -1,0 +1,49 @@
+name: Build IPA (TrollStore)
+
+# Builds an unsigned NewTerm.ipa, fake-signs it with the entitlements NewTerm needs to run a real
+# shell, and uploads it. Install the resulting .ipa with TrollStore (or on a jailbroken device).
+# A normally sideloaded (AltStore/Sideloadly) copy cannot spawn a shell because iOS forbids it.
+
+on:
+  push:
+    branches: [ '**' ]
+    paths-ignore:
+      - '**/*.md'
+      - 'assets/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build IPA
+    runs-on: macos-14
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Install ldid
+      run: brew install ldid
+    - name: Build
+      run: |
+        xcodebuild \
+          -project NewTerm.xcodeproj \
+          -scheme "NewTerm (iOS)" \
+          -configuration Release \
+          -sdk iphoneos \
+          -destination 'generic/platform=iOS' \
+          -derivedDataPath build \
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+          build
+    - name: Package
+      run: |
+        APP=build/Build/Products/Release-iphoneos/NewTerm.app
+        if [ -f "$APP/NewTermLoginHelper" ]; then
+          ldid -SApp/entitlements.plist "$APP/NewTermLoginHelper"
+        fi
+        ldid -SApp/entitlements.plist "$APP"
+        mkdir -p Payload
+        cp -R "$APP" Payload/
+        zip -qry NewTerm.ipa Payload
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: NewTerm-ipa
+        path: NewTerm.ipa

@@ -9,6 +9,7 @@
 import UIKit
 import os.log
 import CoreServices
+import SafariServices
 import SwiftUIX
 import NewTermCommon
 
@@ -31,6 +32,11 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 	private var keyInput = TerminalKeyInput(frame: .zero)
 	private var textView: TerminalHostingView!
 	private var textViewTapGestureRecognizer: UITapGestureRecognizer!
+	private var selectionGestureRecognizer: UILongPressGestureRecognizer!
+	private var pinchGestureRecognizer: UIPinchGestureRecognizer!
+	private var selectionWordStart = TerminalCell(row: 0, col: 0)
+	private var selectionWordEnd = TerminalCell(row: 0, col: 0)
+	private var pinchStartFontSize: Double = 12
 
 	private var state = TerminalState()
 
@@ -75,10 +81,29 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 		textViewTapGestureRecognizer.delegate = self
 		textView.addGestureRecognizer(textViewTapGestureRecognizer)
 
+		// Long press selects the word under the finger; dragging afterwards extends the selection.
+		selectionGestureRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(self.handleSelectionPress(_:)))
+		selectionGestureRecognizer.minimumPressDuration = 0.35
+		selectionGestureRecognizer.delegate = self
+		textView.addGestureRecognizer(selectionGestureRecognizer)
+
+		// Pinch to change the font size.
+		pinchGestureRecognizer = UIPinchGestureRecognizer(target: self, action: #selector(self.handlePinch(_:)))
+		pinchGestureRecognizer.delegate = self
+		textView.addGestureRecognizer(pinchGestureRecognizer)
+
+		state.onSelectionAction = { [weak self] action in
+			self?.performSelectionAction(action)
+		}
+
 		keyInput.frame = view.bounds
 		keyInput.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 		keyInput.textView = textView
 		keyInput.terminalInputDelegate = terminalController
+		keyInput.hasSelection = { [weak self] in self?.state.selection != nil }
+		keyInput.copyHandler = { [weak self] in self?.performSelectionAction(.copy) }
+		keyInput.selectAllHandler = { [weak self] in self?.performSelectionAction(.selectAll) }
+		keyInput.pasteHandler = { [weak self] in self?.clearSelection() }
 		view.addSubview(keyInput)
 	}
 
@@ -212,6 +237,7 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 														 cellSize: glyphSize)
 		if screenSize != newSize {
 			screenSize = newSize
+			state.columns = Int(newSize.cols)
 			delegate?.terminal(viewController: self, screenSizeDidChange: newSize)
 		}
 	}
@@ -235,10 +261,157 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 	// MARK: - Gestures
 
 	@objc private func handleTextViewTap(_ gestureRecognizer: UITapGestureRecognizer) {
+		if gestureRecognizer.state == .ended && state.selection != nil {
+			clearSelection()
+		}
+
 		if gestureRecognizer.state == .ended && !keyInput.isFirstResponder {
 			keyInput.becomeFirstResponder()
 			delegate?.terminalDidBecomeActive(viewController: self)
 		}
+	}
+
+	// MARK: - Selection
+
+	private func cell(at point: CGPoint) -> TerminalCell {
+		// The terminal content’s frame is reported by SwiftUI in window coordinates, so convert the
+		// touch to the same space. This automatically accounts for the current scroll position.
+		let windowPoint = textView.convert(point, to: nil)
+		let origin = state.contentFrame.origin
+		let cellWidth = max(state.fontMetrics.width, 1)
+		let lineHeight = max(state.fontMetrics.height.rounded(.up), 1)
+		let col = Int(((windowPoint.x - origin.x) / cellWidth).rounded(.down))
+		let row = Int(((windowPoint.y - origin.y - TerminalView.verticalSpacing) / lineHeight).rounded(.down))
+		return TerminalCell(row: min(max(row, 0), max(state.lines.count - 1, 0)),
+												col: min(max(col, 0), max(state.columns - 1, 0)))
+	}
+
+	@objc private func handleSelectionPress(_ gestureRecognizer: UILongPressGestureRecognizer) {
+		let cell = cell(at: gestureRecognizer.location(in: textView))
+
+		switch gestureRecognizer.state {
+		case .began:
+			let word = terminalController.wordRange(atRow: cell.row, col: cell.col)
+			selectionWordStart = TerminalCell(row: cell.row, col: word.start)
+			selectionWordEnd = TerminalCell(row: cell.row, col: word.end)
+			state.isSelecting = true
+			state.selection = TerminalSelection(anchor: selectionWordStart, head: selectionWordEnd)
+			UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+		case .changed:
+			var newSelection: TerminalSelection
+			if cell < selectionWordStart {
+				newSelection = TerminalSelection(anchor: selectionWordEnd, head: cell)
+			} else if cell > selectionWordEnd {
+				newSelection = TerminalSelection(anchor: selectionWordStart, head: cell)
+			} else {
+				newSelection = TerminalSelection(anchor: selectionWordStart, head: selectionWordEnd)
+			}
+			if newSelection != state.selection {
+				state.selection = newSelection
+				UISelectionFeedbackGenerator().selectionChanged()
+			}
+
+		case .ended, .cancelled, .failed:
+			state.isSelecting = false
+
+		default:
+			break
+		}
+	}
+
+	@objc private func handlePinch(_ gestureRecognizer: UIPinchGestureRecognizer) {
+		let preferences = Preferences.shared
+		switch gestureRecognizer.state {
+		case .began:
+			pinchStartFontSize = preferences.fontSize
+
+		case .changed:
+			let newSize = min(max((pinchStartFontSize * Double(gestureRecognizer.scale)).rounded(), 8), 36)
+			if newSize != preferences.fontSize {
+				preferences.fontSize = newSize
+			}
+
+		default:
+			break
+		}
+	}
+
+	private func selectedText() -> String? {
+		guard let selection = state.selection else {
+			return nil
+		}
+		let text = terminalController.text(fromRow: selection.start.row, col: selection.start.col,
+																			 toRow: selection.end.row, col: selection.end.col)
+		return text.isEmpty ? nil : text
+	}
+
+	private func clearSelection() {
+		state.isSelecting = false
+		state.selection = nil
+	}
+
+	private func performSelectionAction(_ action: TerminalSelectionAction) {
+		switch action {
+		case .copy:
+			if let text = selectedText() {
+				UIPasteboard.general.string = text
+				UINotificationFeedbackGenerator().notificationOccurred(.success)
+			}
+			clearSelection()
+
+		case .translate:
+			guard let text = selectedText(),
+						let url = translateURL(for: text) else {
+				return
+			}
+			present(SFSafariViewController(url: url), animated: true, completion: nil)
+
+		case .share:
+			guard let text = selectedText() else {
+				return
+			}
+			let viewController = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+			viewController.popoverPresentationController?.sourceView = view
+			viewController.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.safeAreaInsets.top + 8, width: 0, height: 0)
+			present(viewController, animated: true, completion: nil)
+
+		case .paste:
+			if let string = UIPasteboard.general.string {
+				terminalController.paste(string)
+			}
+			clearSelection()
+
+		case .selectAll:
+			guard !state.lines.isEmpty else {
+				return
+			}
+			state.selection = TerminalSelection(anchor: TerminalCell(row: 0, col: 0),
+																					head: TerminalCell(row: state.lines.count - 1, col: max(state.columns - 1, 0)))
+
+		case .clear:
+			clearSelection()
+		}
+	}
+
+	private func translateURL(for text: String) -> URL? {
+		// Translate into the user’s language. Uses the web translator so it works on every iOS version.
+		let preferred = Preferences.shared.preferredLocale.isEmpty
+			? (Locale.preferredLanguages.first ?? "en")
+			: Preferences.shared.preferredLocale
+		var language = String(preferred.prefix(while: { $0 != "-" && $0 != "_" }))
+		if language == "zh" {
+			language = preferred.contains("Hant") || preferred.contains("TW") || preferred.contains("HK") ? "zh-TW" : "zh-CN"
+		}
+
+		var components = URLComponents(string: "https://translate.google.com/")
+		components?.queryItems = [
+			URLQueryItem(name: "sl", value: "auto"),
+			URLQueryItem(name: "tl", value: language),
+			URLQueryItem(name: "text", value: String(text.prefix(4000))),
+			URLQueryItem(name: "op", value: "translate")
+		]
+		return components?.url
 	}
 
 	// MARK: - Lifecycle
@@ -258,13 +431,19 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 	@objc private func preferencesUpdated() {
 		state.fontMetrics = terminalController.fontMetrics
 		state.colorMap = terminalController.colorMap
+		state.columns = Int(screenSize?.cols ?? UInt16(state.columns))
+
+		// A new font size changes how many columns and rows fit on screen.
+		if textView != nil {
+			updateScreenSize()
+		}
 	}
 
 }
 
 extension TerminalSessionViewController: TerminalControllerDelegate {
 
-	func refresh(lines: inout [AnyView]) {
+	func refresh(lines: [TerminalLine]) {
 		state.lines = lines
 	}
 
@@ -337,8 +516,19 @@ extension TerminalSessionViewController: UIGestureRecognizerDelegate {
 	func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
 		// This allows the tap-to-activate-keyboard gesture to work without conflicting with UIKit’s
 		// internal text view/scroll view gestures… as much as we can avoid conflicting, at least.
-		return gestureRecognizer == textViewTapGestureRecognizer
-			&& (!(otherGestureRecognizer is UITapGestureRecognizer) || keyInput.isFirstResponder)
+		guard gestureRecognizer == textViewTapGestureRecognizer else {
+			return false
+		}
+		// Don’t make taps wait for the long press or pinch to fail, or tapping would feel laggy.
+		if otherGestureRecognizer == selectionGestureRecognizer || otherGestureRecognizer == pinchGestureRecognizer {
+			return false
+		}
+		return !(otherGestureRecognizer is UITapGestureRecognizer) || keyInput.isFirstResponder
+	}
+
+	func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+		// Pinching must not fight with the scroll view’s own gestures.
+		return gestureRecognizer == pinchGestureRecognizer
 	}
 }
 
