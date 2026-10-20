@@ -273,15 +273,38 @@ class TerminalSessionViewController: BaseTerminalSplitViewControllerChild {
 
 	// MARK: - Selection
 
+	private func findScrollView(in view: UIView) -> UIScrollView? {
+		for subview in view.subviews {
+			if let scrollView = subview as? UIScrollView {
+				return scrollView
+			}
+			if let scrollView = findScrollView(in: subview) {
+				return scrollView
+			}
+		}
+		return nil
+	}
+
 	private func cell(at point: CGPoint) -> TerminalCell {
-		// The terminal content’s frame is reported by SwiftUI in window coordinates, so convert the
-		// touch to the same space. This automatically accounts for the current scroll position.
-		let windowPoint = textView.convert(point, to: nil)
-		let origin = state.contentFrame.origin
 		let cellWidth = max(state.fontMetrics.width, 1)
 		let lineHeight = max(state.fontMetrics.height.rounded(.up), 1)
-		let col = Int(((windowPoint.x - origin.x) / cellWidth).rounded(.down))
-		let row = Int(((windowPoint.y - origin.y - TerminalView.verticalSpacing) / lineHeight).rounded(.down))
+
+		// Work out where the touch is within the scrolling content. Asking the scroll view directly is
+		// exact, since it knows its own offset on every frame.
+		var x: CGFloat
+		var y: CGFloat
+		if let scrollView = findScrollView(in: textView) {
+			let local = textView.convert(point, to: scrollView)
+			x = local.x - TerminalView.horizontalSpacing
+			y = local.y - TerminalView.verticalSpacing
+		} else {
+			let windowPoint = textView.convert(point, to: nil)
+			x = windowPoint.x - state.contentFrame.origin.x
+			y = windowPoint.y - state.contentFrame.origin.y - TerminalView.verticalSpacing
+		}
+
+		let col = Int((x / cellWidth).rounded(.down))
+		let row = Int((y / lineHeight).rounded(.down))
 		return TerminalCell(row: min(max(row, 0), max(state.lines.count - 1, 0)),
 												col: min(max(col, 0), max(state.columns - 1, 0)))
 	}
